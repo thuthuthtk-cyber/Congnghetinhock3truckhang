@@ -1,0 +1,128 @@
+@import "tailwindcss";
+
+:root {
+  /* MÀU THƯƠNG HIỆU */
+  --color-primary: #4F46E5;
+  --color-primary-hover: #4338CA;
+  --color-primary-light: #EEF2FF;
+  --color-accent-ai: #7C3AED;
+  --color-accent-ai-hover: #6D28D9;
+  --color-accent-ai-light: #F5F3FF;
+
+  /* MÀU TRUNG TÍNH */
+  --color-bg-main: #F9FAFB;
+  --color-bg-card: #FFFFFF;
+  --color-border: #E5E7EB;
+  --color-text-heading: #111827;
+  --color-text-body: #6B7280;
+  --color-text-disabled: #9CA3AF;
+
+  /* SIDEBAR: 1 tông xanh rêu đậm duy nhất #134E4A */
+  --color-sidebar-bg: #134E4A;
+  --color-sidebar-hover: #115E59;
+  --color-sidebar-active: #042F2E;
+  --color-sidebar-border: #115E59;
+
+  /* MÀU NGỮ NGHĨA */
+  --color-success-text: #16A34A;
+  --color-success-bg: #F0FDF4;
+  --color-success-border: #BBF7D0;
+
+  --color-warning-text: #D97706;
+  --color-warning-bg: #FFFBEB;
+  --color-warning-border: #FDE68A;
+
+  --color-danger-text: #DC2626;
+  --color-danger-bg: #FEF2F2;
+  --color-danger-border: #FECACA;
+
+  --color-info-text: #0284C7;
+  --color-info-bg: #F0F9FF;
+  --color-info-border: #BAE6FD;
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: var(--color-bg-main);
+    color: var(--color-text-body);
+  }
+  h1, h2, h3, h4, h5, h6, .font-heading {
+    font-family: 'Lexend', 'Plus Jakarta Sans', sans-serif;
+    color: var(--color-text-heading);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ========================================================================= */
+/* LAYOUT FULL-WIDTH EXPANSION & SIDEBAR STICKY SUPPORT                      */
+/* ========================================================================= */
+.min-h-screen > .flex-1.flex.items-stretch {
+  max-width: 100% !important;
+  width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0.75rem !important;
+  padding-right: 0.75rem !important;
+  padding-top: 0.75rem !important;
+  padding-bottom: 5.5rem !important;
+  overflow-x: hidden !important;
+  align-items: flex-start !important;
+  flex-direction: column !important;
+  gap: 0.75rem !important;
+}
+
+@media (min-width: 768px) {
+  .min-h-screen > .flex-1.flex.items-stretch {
+    flex-direction: row !important;
+    padding-left: 1.25rem !important;
+    padding-right: 1.25rem !important;
+    padding-top: 1.5rem !important;
+    padding-bottom: 2rem !important;
+    overflow-x: visible !important;
+    gap: 1.25rem !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  .min-h-screen > .flex-1.flex.items-stretch {
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
+    gap: 1.5rem !important;
+  }
+}
+
+/* Hide scrollbar for clean horizontal swipe tabs on mobile */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+

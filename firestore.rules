@@ -1,0 +1,161 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'admin@school.edu.vn' ||
+        request.auth.token.email == 'admin@eduplay.vn' ||
+        request.auth.token.email == 'thuthuthtk@gmail.com' ||
+        request.auth.token.email == 'vanquan18189@gmail.com' ||
+        request.auth.token.email.matches('(?i).*admin.*')
+      );
+    }
+
+    function isAuthorizedTeacher() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        request.auth.token.email in [
+          'thuthuthtk@gmail.com',
+          'vanquan18189@gmail.com',
+          'hathiram@gmail.com',
+          'luuminh@gmail.com',
+          'buiyen@gmail.com',
+          'thanhthao@gmail.com',
+          'buituyentk@gmail.com',
+          'huongdiem18051995@gmail.com',
+          'admin@school.edu.vn',
+          'admin@eduplay.vn'
+        ] ||
+        exists(/databases/$(database)/documents/teachers/$(request.auth.uid))
+      );
+    }
+
+    function isDocOwner(resData) {
+      return isAuthorizedTeacher() && (
+        isAdmin() ||
+        (resData.teacherEmail != null && resData.teacherEmail == request.auth.token.email) ||
+        (resData.teacherId != null && resData.teacherId == request.auth.uid) ||
+        (resData.createdByEmail != null && resData.createdByEmail == request.auth.token.email) ||
+        (resData.authorEmail != null && resData.authorEmail == request.auth.token.email) ||
+        (resData.userId != null && resData.userId == request.auth.uid)
+      );
+    }
+
+    // Assignments collection
+    match /assignments/{assignmentId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // Exams collection
+    match /exams/{examId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // Questions collection
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // ELearning lessons collection
+    match /elearning_lessons/{lessonId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // ELearning assignments collection
+    match /elearning_assignments/{id} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // Games collection
+    match /games/{gameId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // Quizzis collection
+    match /quizzis/{quizId} {
+      allow read: if true;
+      allow create: if isAuthorizedTeacher();
+      allow update, delete: if isDocOwner(resource.data);
+    }
+
+    // Teachers collection
+    match /teachers/{teacherId} {
+      allow read: if true;
+      allow create: if isAdmin();
+      allow update: if isAuthorizedTeacher() && (
+        isAdmin() ||
+        (resource.data.email != null && resource.data.email == request.auth.token.email) ||
+        (resource.data.id != null && request.auth.token.email != null)
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedTeacher();
+      allow delete: if isAdmin();
+    }
+
+    // To chuyen mon (Departments)
+    match /to_chuyen_mon/{deptId} {
+      allow read: if true;
+      allow write: if isAuthorizedTeacher();
+    }
+
+    // Class rosters collection
+    match /class_rosters/{rosterId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedTeacher();
+      allow delete: if isAdmin();
+    }
+
+    // Students collection
+    match /students/{studentId} {
+      allow read: if true;
+      allow write: if isAuthorizedTeacher();
+    }
+
+    // Classes collection
+    match /classes/{classId} {
+      allow read: if true;
+      allow create, update: if isAuthorizedTeacher();
+      allow delete: if isAdmin();
+    }
+
+    // Live Quiz Sessions collection (interactive student join)
+    match /quiz_live_sessions/{sessionId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Settings
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAuthorizedTeacher();
+    }
+
+    // Default fallback rule: Restricted to authorized teachers & admins
+    match /{document=**} {
+      allow read: if true;
+      allow write: if isAuthorizedTeacher();
+    }
+  }
+}

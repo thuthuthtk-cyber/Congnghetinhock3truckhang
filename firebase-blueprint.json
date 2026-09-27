@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "Question": {
+      "title": "Question",
+      "description": "A question in the question bank for quizzes, exams and homework",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the question" },
+        "code": { "type": "string", "description": "Code of the question, e.g. CH-001" },
+        "subject": { "type": "string", "description": "Subject e.g. Toán, Tiếng Việt, Tin học" },
+        "grade": { "type": "string", "description": "Grade e.g. Khối 1, Khối 2, Khối 3, Khối 4, Khối 5" },
+        "level": { "type": "string", "description": "Cognitive level e.g. nhan_biet, thong_hieu, van_dung, van_dung_cao" },
+        "type": { "type": "string", "description": "Question type e.g. multiple_choice, essay, true_false, fill_blank" },
+        "lessonName": { "type": "string", "description": "Topic or lesson title" },
+        "content": { "type": "string", "description": "Question prompt text" },
+        "options": { "type": "array", "description": "Options A, B, C, D" },
+        "correctAnswer": { "type": "string", "description": "Correct answer value or criteria" },
+        "explanation": { "type": "string", "description": "Pedagogical explanation or grading guide" }
+      },
+      "required": ["id", "subject", "grade", "level", "content"]
+    },
+    "QuizziGame": {
+      "title": "QuizziGame",
+      "description": "Interactive Quizzi game items created by teachers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the Quizzi game" },
+        "originalGameId": { "type": "string", "description": "Root identifier if assigned to multiple classes" },
+        "subject": { "type": "string", "description": "Subject in uppercase, e.g. CÔNG NGHỆ" },
+        "subjectLabel": { "type": "string", "description": "Subject display label, e.g. Công nghệ" },
+        "title": { "type": "string", "description": "Title of the Quizzi game" },
+        "desc": { "type": "string", "description": "Description of the game" },
+        "grade": { "type": "string", "description": "Target grade level, e.g. Khối 3" },
+        "classInfo": { "type": "string", "description": "Target class name, e.g. Lớp 3A" },
+        "icon": { "type": "string", "description": "Lucide icon name" },
+        "color": { "type": "string", "description": "Color theme token" },
+        "type": { "type": "string", "description": "Game category or interaction type" },
+        "embedUrl": { "type": "string", "description": "External embedded game URL or link" },
+        "createdAt": { "type": "string", "description": "Creation timestamp or date string" }
+      },
+      "required": ["id", "title", "subject", "grade", "classInfo"]
+    },
+    "QuizLiveSession": {
+      "title": "QuizLiveSession",
+      "description": "Real-time session participant tracking and leaderboards for exams and assignments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique session ID: targetId_studentId" },
+        "targetId": { "type": "string", "description": "Exam or Assignment ID" },
+        "targetTitle": { "type": "string", "description": "Exam or Assignment title" },
+        "subject": { "type": "string", "description": "Subject name" },
+        "studentId": { "type": "string", "description": "Student ID" },
+        "studentName": { "type": "string", "description": "Student full name" },
+        "studentClass": { "type": "string", "description": "Student class name, e.g. Lớp 5A" },
+        "studentAvatar": { "type": "string", "description": "Equipped avatar or emoji" },
+        "status": { "type": "string", "description": "in_progress, completed, or left" },
+        "answeredCount": { "type": "number", "description": "Number of answered questions" },
+        "totalQuestions": { "type": "number", "description": "Total questions in exam" },
+        "score": { "type": "number", "description": "Score on scale 0-10" },
+        "scoreStr": { "type": "string", "description": "Score formatted string" },
+        "percentage": { "type": "number", "description": "Score percentage 0-100" },
+        "timeSpentSeconds": { "type": "number", "description": "Seconds taken to complete" },
+        "startedAt": { "type": "number", "description": "Session start timestamp" },
+        "updatedAt": { "type": "number", "description": "Last updated timestamp" },
+        "completedAt": { "type": "number", "description": "Completion timestamp" }
+      },
+      "required": ["id", "targetId", "studentId", "status"]
+    },
+    "ClassRoster": {
+      "title": "ClassRoster",
+      "description": "Streamlined student roster for a class",
+      "type": "object",
+      "properties": {
+        "classKey": { "type": "string", "description": "Class identifier e.g. 3C" },
+        "className": { "type": "string", "description": "Standard class name e.g. Lớp 3C" },
+        "totalStudents": { "type": "number", "description": "Total number of students" },
+        "male": { "type": "number", "description": "Total male students" },
+        "female": { "type": "number", "description": "Total female students" },
+        "updatedAt": { "type": "string", "description": "Timestamp of last update" },
+        "students": {
+          "type": "array",
+          "description": "List of students containing only id, code, fullName, dob, gender, password, className"
+        }
+      },
+      "required": ["classKey", "className", "totalStudents", "students"]
+    }
+  },
+  "firestore": {
+    "/class_rosters/{classKey}": {
+      "schema": "ClassRoster",
+      "description": "Class rosters containing only the 6 core student fields"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Repository of all created and imported questions"
+    },
+    "/quizzi_games/{quizziGameId}": {
+      "schema": "QuizziGame",
+      "description": "Interactive Quizzi games collection"
+    },
+    "/quiz_live_sessions/{sessionId}": {
+      "schema": "QuizLiveSession",
+      "description": "Real-time participants and leaderboard records for exams and assignments"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "DẠY VÀ HỌC SỐ PK TRỰC KHANG",
+  "description": "Hệ thống Quản lý Dạy và Học Số PK Trực Khang với các phân hệ chuyên sâu: Quản lý đề kiểm tra, Bài tập, Ngân hàng câu hỏi và Quản lý người dùng tích hợp Trợ lý AI sư phạm.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
