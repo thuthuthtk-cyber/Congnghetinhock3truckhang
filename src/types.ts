@@ -83,6 +83,7 @@ export interface TrueFalseStatement {
 
 export interface ClassificationItem {
   name: string;
+  content?: string;
   group: string; // group name or index
 }
 
@@ -162,18 +163,32 @@ export interface ExamPaper {
 
 export interface AssignmentSubmission {
   id: string;
+  homeworkId?: string;
+  assignmentId?: string;
   studentId: string;
+  studentCode?: string;
+  studentRecordId?: string;
   studentName: string;
+  className?: string;
   submittedAt: string;
+  submittedAtIso?: string;
   attachmentUrl?: string;
   content: string;
   score?: number; // 0 - 10
+  scoreText?: string;
+  answers?: Record<number, any>;
+  questionResults?: ('pass' | 'fail' | 'none')[];
+  correctCount?: number;
+  totalQuestions?: number;
+  timeSpentSeconds?: number;
+  attempts?: number;
   feedback?: string;
   status: 'pending' | 'graded';
 }
 
 export interface HomeworkAssignment {
   id: string;
+  homeworkId?: string;
   title: string;
   subject: string;
   grade?: string; // e.g. "Khối 3"

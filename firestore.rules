@@ -50,7 +50,22 @@ service cloud.firestore {
     match /assignments/{assignmentId} {
       allow read: if true;
       allow create: if isAuthorizedTeacher();
-      allow update, delete: if isDocOwner(resource.data);
+      allow update: if isDocOwner(resource.data) || (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['submissions', 'completedCount', 'updatedAt'])
+      );
+      allow delete: if isDocOwner(resource.data);
+    }
+
+    // Homework Submissions collection (student PIN session submissions)
+    match /homework_submissions/{submissionId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Submissions collection
+    match /submissions/{submissionId} {
+      allow read: if true;
+      allow write: if true;
     }
 
     // Exams collection

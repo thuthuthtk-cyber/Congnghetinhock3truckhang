@@ -579,44 +579,6 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
     }
   ]);
 
-  const handleFixOrderingData = async () => {
-    try {
-      const q = await fetchQuestionsFromFirestore();
-      
-      let fixedCount = 0;
-      for (const item of q) {
-        if (item.type === 'ordering' || item.type === 'sắp xếp') {
-          const canonical = resolveCanonicalOrderingSteps(item);
-          if (canonical.length > 0 && JSON.stringify(canonical) !== JSON.stringify(item.options)) {
-            console.log("FIXING QUESTION:", item.content, "Was:", item.options, "Now:", canonical);
-            item.options = canonical;
-            item.correctAnswer = canonical.join(' -> ');
-            await saveQuestionToFirestore(item);
-            fixedCount++;
-          }
-        }
-      }
-      
-      alert(`Đã hoàn thành kiểm tra và sửa ${fixedCount} câu hỏi sắp xếp thứ tự!`);
-    } catch (err) {
-      console.error(err);
-      alert("Lỗi khi sửa: " + err);
-    }
-  };
-  
-  // Add button to JSX
-  // (In the header area, I'll put it temporarily next to the "Nhập" button)
-
-  const handleMoveOption = (questionId: string, index: number, direction: 'up' | 'down', currentOptions: string[]) => {
-    const opts = [...(orderingOptionsState[questionId] || currentOptions)];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= opts.length) return;
-    const temp = opts[index];
-    opts[index] = opts[targetIndex];
-    opts[targetIndex] = temp;
-    setOrderingOptionsState({ ...orderingOptionsState, [questionId]: opts });
-  };
-
   // Get unique list of lessons for current subject & grade filter
   const availableLessons = Array.from(
     new Set(
@@ -1645,12 +1607,6 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <button
-              onClick={handleFixOrderingData}
-              className="bg-red-500 text-white px-4 py-2 rounded-lg font-bold"
-            >
-              Fix Quạt Rung Lắc
-            </button>
             <p className="text-xs text-slate-600 leading-relaxed">
               Nhập hàng loạt câu hỏi trắc nghiệm & tự luận vào ngân hàng dữ liệu theo định dạng Excel (.xlsx) chuẩn Dạy & Học Số PK Trực Khang.
             </p>

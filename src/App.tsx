@@ -45,8 +45,10 @@ import {
   saveAssignmentToFirestore,
   deleteAssignmentFromFirestore,
   subscribeToAssignmentsFromFirestore,
-  getLocalCachedAssignments
+  getLocalCachedAssignments,
+  extractCanonicalStudentCode
 } from './services/assignmentStorageService';
+import { getStudentsFromLocalStorage } from './services/studentStorageService';
 import {
   saveGameToFirestore,
   deleteGameFromFirestore,
@@ -633,8 +635,8 @@ export function App() {
                   <StudentExamModule
                     exams={examPapers}
                     questionsBank={questionBank}
-                    currentUserId={currentStudent?.code || 'u-4'}
-                    currentUserName={currentStudent?.name || 'Lê Minh Anh'}
+                    currentUserId={extractCanonicalStudentCode(currentStudent?.code || currentStudent?.id) || 'u-4'}
+                    currentUserName={currentStudent?.fullName || currentStudent?.name || 'Lê Minh Anh'}
                   />
                 ) : (
                   <ExamManagementModule
@@ -653,8 +655,8 @@ export function App() {
                     assignments={assignments}
                     questionsBank={questionBank}
                     onSaveAssignment={handleSaveAssignment}
-                    currentUserId={currentStudent?.code || 'u-4'}
-                    currentUserName={currentStudent?.name || 'Lê Minh Anh'}
+                    currentUserId={extractCanonicalStudentCode(currentStudent?.code || currentStudent?.id) || 'u-4'}
+                    currentUserName={currentStudent?.fullName || currentStudent?.name || 'Lê Minh Anh'}
                   />
                 ) : (
                   <AssignmentModule
@@ -676,21 +678,32 @@ export function App() {
                     onBatchDeleteQuestions={handleBatchDeleteQuestions}
                     userRole={userRole}
                     onAssignHomework={(config) => {
-                      const newAssignment: HomeworkAssignment = {
-                        id: `hw-bank-${Date.now()}`,
-                        title: config.title,
-                        subject: config.subject,
-                        grade: config.grade,
-                        targetClass: config.classes.join(', '),
-                        dueDate: config.dueDate,
-                        description: `Bài tập tự luyện môn ${config.subject} gồm ${config.selectedQuestions.length} câu hỏi chuẩn sư phạm.`,
-                        questions: config.selectedQuestions,
-                        totalStudents: 35 * (config.classes.length || 1),
-                        completedCount: 0,
-                        submissions: [],
-                        createdAt: new Date().toISOString()
-                      };
-                      handleSaveAssignment(newAssignment);
+                      const rootId = `hw-bank-${Date.now()}`;
+                      const rawClasses: string[] = config.classes && config.classes.length > 0 ? config.classes : ['Lớp 3C'];
+                      const classes: string[] = Array.from(new Set(rawClasses.map((c: string) => c.trim()).filter(Boolean)));
+                      classes.forEach((cls: string) => {
+                        const canonicalId = classes.length === 1
+                          ? rootId
+                          : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+                        const roster = getStudentsFromLocalStorage(cls);
+                        const newAssignment: HomeworkAssignment = {
+                          id: canonicalId,
+                          homeworkId: canonicalId,
+                          originalAssignmentId: rootId,
+                          title: config.title || `Bài tập rèn luyện môn ${config.subject}`,
+                          subject: config.subject,
+                          grade: config.grade,
+                          targetClass: cls,
+                          dueDate: config.dueDate,
+                          description: `Bài tập tự luyện môn ${config.subject} gồm ${config.selectedQuestions.length} câu hỏi chuẩn sư phạm.`,
+                          questions: config.selectedQuestions,
+                          totalStudents: roster.length > 0 ? roster.length : 38,
+                          completedCount: 0,
+                          submissions: [],
+                          createdAt: new Date().toISOString()
+                        };
+                        handleSaveAssignment(newAssignment);
+                      });
                     }}
                     onCreateExam={(examData) => {
                       const newExam: ExamPaper = {

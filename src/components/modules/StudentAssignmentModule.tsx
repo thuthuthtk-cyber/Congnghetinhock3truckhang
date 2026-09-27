@@ -26,6 +26,11 @@ import {
   getEffectiveStudentClassAndGrade,
   isTargetingStudent
 } from '../../services/studentSessionService';
+import {
+  saveHomeworkSubmissionToFirestore,
+  extractCanonicalStudentCode,
+  deduplicateSubmissionsPerStudent
+} from '../../services/assignmentStorageService';
 
 interface StudentAssignmentModuleProps {
   assignments: HomeworkAssignment[];
@@ -39,14 +44,20 @@ interface StudentAssignmentModuleProps {
 
 export interface AssignmentSubmissionItem {
   id: string;
+  homeworkId?: string;
+  assignmentId?: string;
   type: 'assignment';
   submissionType?: 'assignment';
   studentId?: string;
+  studentCode?: string;
+  studentName?: string;
+  className?: string;
   title: string;
   subject: string;
   rank: string;
   score: string;
   submittedTime: string;
+  questionResults?: ('pass' | 'fail' | 'none')[];
   assignment: HomeworkAssignment;
   answers: Record<number, any>;
 }
@@ -78,6 +89,7 @@ const isAssignmentSubmission = (sub: any): boolean => {
 export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = ({
   assignments = [],
   questionsBank = [],
+  onSaveAssignment,
   currentUserId,
   currentUserName,
   isPreviewMode = false,
@@ -92,7 +104,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     return getEffectiveStudentClassAndGrade();
   }, []);
 
-  const effectiveUserId = currentUserId || studentId || 'u-4';
+  const effectiveUserId = extractCanonicalStudentCode(currentUserId || studentId) || currentUserId || studentId || 'u-4';
   const effectiveUserName = currentUserName || studentName || 'Học sinh';
 
   const [activeTab, setActiveTab] = useState<'todo' | 'history'>('todo');
@@ -134,33 +146,48 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
   // Re-sync assignment history when student user changes & auto-clean any legacy polluted exam records
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(`eduplay_student_submissions_${effectiveUserId}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const onlyAssignments: AssignmentSubmissionItem[] = parsed
-            .filter(isAssignmentSubmission)
-            .map((s: any) => ({
-              ...s,
-              type: 'assignment' as const,
-              submissionType: 'assignment' as const,
-              assignment: s.assignment || {
-                id: s.id || 'as-legacy',
-                title: s.title || 'Bài tập tự luyện',
-                subject: s.subject || 'Môn học',
-                questions: s.exam?.questions || []
-              }
-            }));
-          setAssignmentHistory(onlyAssignments);
-          if (onlyAssignments.length !== parsed.length) {
-            localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(onlyAssignments));
+    const loadStudentHistory = () => {
+      try {
+        const saved = localStorage.getItem(`eduplay_student_submissions_${effectiveUserId}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            const onlyAssignments: AssignmentSubmissionItem[] = parsed
+              .filter(isAssignmentSubmission)
+              .map((s: any) => ({
+                ...s,
+                type: 'assignment' as const,
+                submissionType: 'assignment' as const,
+                assignment: s.assignment || {
+                  id: s.id || 'as-legacy',
+                  title: s.title || 'Bài tập tự luyện',
+                  subject: s.subject || 'Môn học',
+                  questions: s.exam?.questions || []
+                }
+              }));
+            setAssignmentHistory(onlyAssignments);
+            return;
           }
-          return;
         }
-      }
-      setAssignmentHistory([]);
-    } catch {}
+        setAssignmentHistory([]);
+      } catch {}
+    };
+
+    loadStudentHistory();
+
+    const handleUpdateEvent = () => {
+      loadStudentHistory();
+    };
+
+    window.addEventListener('eduplay_student_submissions_updated', handleUpdateEvent);
+    window.addEventListener('eduplay_homework_submission_saved', handleUpdateEvent);
+    window.addEventListener('storage', handleUpdateEvent);
+
+    return () => {
+      window.removeEventListener('eduplay_student_submissions_updated', handleUpdateEvent);
+      window.removeEventListener('eduplay_homework_submission_saved', handleUpdateEvent);
+      window.removeEventListener('storage', handleUpdateEvent);
+    };
   }, [effectiveUserId]);
 
   // Diagnostic Audit Log for storage & real-time assignments
@@ -184,18 +211,47 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     rank: string;
     score: string;
     submittedTime: string;
+    questionResults?: ('pass' | 'fail' | 'none')[];
     assignment: HomeworkAssignment;
     answers: Record<number, any>;
   }) => {
+    const canonicalHomeworkId = String(newSub.assignment?.id || newSub.assignment?.homeworkId || '').trim();
+    const questions = newSub.assignment.questions || [];
+    let correctCount = 0;
+    const computedResults: ('pass' | 'fail' | 'none')[] = [];
+    questions.forEach((q, idx) => {
+      const studentChoice = newSub.answers[idx];
+      if (studentChoice === undefined || studentChoice === null || studentChoice === '') {
+        computedResults.push('none');
+        return;
+      }
+      const isOk = checkQuestionCorrectLocal(q, studentChoice);
+      if (isOk) {
+        correctCount++;
+      }
+      computedResults.push(isOk ? 'pass' : 'fail');
+    });
+    const finalQuestionResults = (newSub.questionResults && newSub.questionResults.length > 0)
+      ? newSub.questionResults
+      : computedResults;
+    const totalQuestions = questions.length || 1;
+    const numericScore = parseFloat(String(newSub.score)) || Math.round((correctCount / totalQuestions) * 100) / 10;
+
     const subWithStudent: AssignmentSubmissionItem = { 
-      ...newSub, 
+      ...newSub,
+      homeworkId: canonicalHomeworkId,
+      assignmentId: canonicalHomeworkId,
       type: 'assignment',
       submissionType: 'assignment',
-      studentId: effectiveUserId 
+      studentId: effectiveUserId,
+      studentCode: effectiveUserId,
+      studentName: effectiveUserName,
+      className: studentClass || newSub.assignment.targetClass || '',
+      questionResults: finalQuestionResults
     };
     const updatedList = [
       subWithStudent, 
-      ...assignmentHistory.filter(s => (s.assignment?.id && s.assignment.id !== newSub.assignment?.id) || (s.id && s.id !== newSub.id))
+      ...assignmentHistory.filter(s => (s.assignment?.id && s.assignment.id !== canonicalHomeworkId) && (s.homeworkId !== canonicalHomeworkId))
     ];
     setAssignmentHistory(updatedList);
     try {
@@ -205,21 +261,46 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       console.error('Error saving student assignment submission:', err);
     }
 
-    // Calculate correct answers
-    const questions = newSub.assignment.questions || [];
-    let correctCount = 0;
-    questions.forEach((q, idx) => {
-      const studentChoice = newSub.answers[idx];
-      if (checkQuestionCorrectLocal(q, studentChoice)) {
-        correctCount++;
-      }
-    });
-    const totalQuestions = questions.length || 1;
+    if (!isPreviewMode && canonicalHomeworkId) {
+      saveHomeworkSubmissionToFirestore({
+        homeworkId: canonicalHomeworkId,
+        assignmentTitle: newSub.assignment.title || newSub.title,
+        subject: newSub.assignment.subject || newSub.subject,
+        grade: newSub.assignment.grade || studentGrade,
+        targetClass: newSub.assignment.targetClass || studentClass,
+        studentId: effectiveUserId,
+        studentCode: effectiveUserId,
+        studentRecordId: studentId || effectiveUserId,
+        studentName: effectiveUserName,
+        className: studentClass || newSub.assignment.targetClass || '',
+        score: numericScore,
+        scoreText: newSub.score,
+        answers: newSub.answers,
+        questionResults: finalQuestionResults,
+        correctCount,
+        totalQuestions,
+        submittedAt: newSub.submittedTime
+      }).then((savedSub) => {
+        if (savedSub && onSaveAssignment) {
+          const mergedSubs = deduplicateSubmissionsPerStudent([
+            ...(newSub.assignment.submissions || []),
+            savedSub
+          ]);
+          onSaveAssignment({
+            ...newSub.assignment,
+            id: canonicalHomeworkId,
+            homeworkId: canonicalHomeworkId,
+            submissions: mergedSubs,
+            completedCount: mergedSubs.length
+          });
+        }
+      }).catch(err => console.warn('Error syncing homework submission:', err));
+    }
 
     // Automatic reward calculation (+10 Xu / +5 EXP, bonus +5 Xu if >=80% correct, first-time only)
     awardAssignmentReward(
       effectiveUserId,
-      newSub.assignment.id,
+      canonicalHomeworkId || newSub.assignment.id,
       newSub.title,
       correctCount,
       totalQuestions
@@ -316,6 +397,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       title: solvingAssignment.title,
       subject: solvingAssignment.subject || 'Toán',
       grade: solvingAssignment.grade || 'Khối 3',
+      targetClass: solvingAssignment.targetClass,
       durationMinutes: 45,
       matrix: { nhanBiet: 0, thongHieu: 0, vanDung: 0, vanDungCao: 0 },
       questions: solvingAssignment.questions || [],
@@ -351,6 +433,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
               rank: newSub.rank,
               score: newSub.score,
               submittedTime: newSub.submittedTime,
+              questionResults: (newSub as any).questionResults,
               assignment: solvingAssignment,
               answers: newSub.answers || {}
             });

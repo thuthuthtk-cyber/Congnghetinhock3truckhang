@@ -60,18 +60,36 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
+import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import { getStudentsFromLocalStorage, getDefault5BRoster } from '../../services/studentStorageService';
+import {
+  getStudentsFromLocalStorage,
+  fetchClassStudentsFromFirestore,
+  deduplicateAndNormalizeStudents,
+  normalizeClassKey
+} from '../../services/studentStorageService';
+import {
+  subscribeToAllHomeworkSubmissionsFromFirestore,
+  resolveSubmissionsForAssignment,
+  isSameStudentSubmission,
+  saveHomeworkSubmissionToFirestore,
+  deleteHomeworkSubmissionFromFirestore,
+  extractCanonicalStudentCode
+} from '../../services/assignmentStorageService';
 import { auth } from '../../services/firebase';
+import { StudentRecord } from '../../types';
 
 interface StudentSubmissionRow {
+  id?: string;
   code: string;
   name: string;
   answers: ('pass' | 'fail' | 'none')[];
+  rawAnswers?: Record<number, any>;
   totalScore: number | string;
   aiStatus: 'pass' | 'fail' | 'none';
   submittedTime: string;
   status: 'submitted' | 'waiting';
+  feedback?: string;
 }
 
 const CLASS_3A_STUDENTS: StudentSubmissionRow[] = [
@@ -203,48 +221,168 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [regradeScore, setRegradeScore] = useState('10');
   const [regradeComment, setRegradeComment] = useState('Chấm lại bởi AI thành công.');
 
-  // Dynamic tracking students derived from detailAssignment submissions and class roster
-  const trackingStudentsList = useMemo(() => {
-    if (!detailAssignment) return [];
-    
-    // Debug log as requested by user
-    console.log("Current Assignment ID querying:", detailAssignment.id);
+  // Live submissions map keyed by canonical homeworkId from Firestore + LocalStorage
+  const [submissionsByHomeworkId, setSubmissionsByHomeworkId] = useState<Record<string, AssignmentSubmission[]>>({});
+  const [rosterVersion, setRosterVersion] = useState<number>(0);
 
-    // Get authentic class students roster or default fallback
-    const targetClassName = detailAssignment.targetClass || 'Lớp 3A';
-    const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || getDefault5BRoster();
-    const subMap = new Map<string, AssignmentSubmission>();
-    
-    (detailAssignment.submissions || []).forEach(sub => {
-      const key = (sub.studentId || sub.studentName || '').trim().toLowerCase();
-      if (key) subMap.set(key, sub);
+  useEffect(() => {
+    const unsub = subscribeToAllHomeworkSubmissionsFromFirestore((liveMap) => {
+      setSubmissionsByHomeworkId(liveMap);
+    });
+    return () => unsub();
+  }, []);
+
+  // Sync class rosters from Firestore for all target classes in assignments and detailAssignment
+  useEffect(() => {
+    const targetClasses = new Set<string>();
+    (assignments || []).forEach((as) => {
+      if (as?.targetClass) {
+        as.targetClass.split(',').forEach((c) => {
+          const clean = c.trim();
+          if (clean) targetClasses.add(clean);
+        });
+      }
+    });
+    if (detailAssignment?.targetClass) {
+      targetClasses.add(detailAssignment.targetClass.trim());
+    }
+
+    targetClasses.forEach((cls) => {
+      fetchClassStudentsFromFirestore(cls)
+        .then((cloudRoster) => {
+          if (cloudRoster && cloudRoster.length > 0) {
+            setRosterVersion((v) => v + 1);
+          }
+        })
+        .catch(() => {});
     });
 
-    const questionCount = detailAssignment.questions?.length || 5;
+    const handleStudentsUpdated = () => {
+      setRosterVersion((v) => v + 1);
+    };
+    window.addEventListener('eduplay_students_updated', handleStudentsUpdated);
+    return () => {
+      window.removeEventListener('eduplay_students_updated', handleStudentsUpdated);
+    };
+  }, [assignments, detailAssignment?.id, detailAssignment?.targetClass]);
+
+  // Keep detailAssignment synchronized with the latest record from assignments list
+  const activeDetailAssignment = useMemo(() => {
+    if (!detailAssignment) return null;
+    const latest = (assignments || []).find((a) => a.id === detailAssignment.id);
+    if (!latest) return detailAssignment;
+    return {
+      ...latest,
+      ...detailAssignment,
+      id: detailAssignment.id,
+      homeworkId: detailAssignment.id,
+      targetClass: detailAssignment.targetClass || latest.targetClass,
+      questions: (latest.questions && latest.questions.length > 0) ? latest.questions : detailAssignment.questions,
+      submissions: latest.submissions || detailAssignment.submissions || []
+    };
+  }, [detailAssignment, assignments]);
+
+  // Helper to get clean, strictly deduplicated class roster for a specific class
+  const getCleanClassRoster = useCallback((classNameRaw?: string): StudentRecord[] => {
+    const targetClassName = (classNameRaw || 'Lớp 3C').trim();
+    const targetKey = normalizeClassKey(targetClassName);
+    const rawList = getStudentsFromLocalStorage(targetClassName);
+    const deduped = deduplicateAndNormalizeStudents(rawList, targetClassName);
+    return deduped.filter((st) => normalizeClassKey(st.className || targetClassName) === targetKey);
+  }, [rosterVersion]);
+
+  // Dynamic tracking students derived from activeDetailAssignment submissions and deduplicated class roster
+  const trackingStudentsList = useMemo(() => {
+    if (!activeDetailAssignment) return [];
+
+    const targetClassName = (activeDetailAssignment.targetClass || 'Lớp 3C').trim();
+    const classStudentsRoster = getCleanClassRoster(targetClassName);
+    const resolvedSubmissions = resolveSubmissionsForAssignment(
+      activeDetailAssignment,
+      submissionsByHomeworkId,
+      assignments
+    );
+
+    console.log('📊 [Theo dõi nộp bài rèn luyện] Query homeworkId:', {
+      homeworkId: activeDetailAssignment.id,
+      targetClass: targetClassName,
+      classRosterCount: classStudentsRoster.length,
+      submissionsFoundCount: resolvedSubmissions.length,
+      submissions: resolvedSubmissions
+    });
+
+    const questions = activeDetailAssignment.questions || [];
+    const questionCount = Math.max(1, questions.length || 1);
 
     return classStudentsRoster.map((st, idx) => {
-      const studentKeyId = (st.id || '').trim().toLowerCase();
-      const studentKeyName = (st.name || st.fullName || '').trim().toLowerCase();
-      const submission = subMap.get(studentKeyId) || subMap.get(studentKeyName);
+      const canonicalStCode = extractCanonicalStudentCode(st.code || st.id) || `st-${idx + 1}`;
+      const studentDisplayName = (st.fullName || st.name || `Học sinh ${idx + 1}`).trim();
+
+      const submission = resolvedSubmissions.find((sub) =>
+        isSameStudentSubmission(sub, {
+          id: st.id,
+          code: canonicalStCode,
+          username: st.username,
+          name: studentDisplayName,
+          fullName: studentDisplayName
+        })
+      );
 
       if (submission) {
-        const score = submission.score !== undefined ? submission.score : '-';
-        const isPassed = typeof score === 'number' && score >= 5;
-        const answers = Array.from({ length: questionCount }).map((_, qi) => (qi < Math.floor(questionCount * 0.8) ? ('pass' as const) : ('fail' as const)));
+        let parsedAnswers: Record<number, any> = submission.answers || {};
+        if ((!parsedAnswers || Object.keys(parsedAnswers).length === 0) && submission.content) {
+          try {
+            const parsed = JSON.parse(submission.content);
+            if (parsed && typeof parsed === 'object') {
+              parsedAnswers = parsed;
+            }
+          } catch {}
+        }
+
+        let perQuestionStatus: ('pass' | 'fail' | 'none')[] = [];
+        if (Array.isArray(submission.questionResults) && submission.questionResults.length === questionCount) {
+          perQuestionStatus = submission.questionResults;
+        } else if (questions.length > 0 && parsedAnswers && Object.keys(parsedAnswers).length > 0) {
+          perQuestionStatus = questions.map((q, qIdx) => {
+            const ans = parsedAnswers[qIdx];
+            if (ans === undefined || ans === null || ans === '') return 'none' as const;
+            return checkQuestionCorrectLocal(q, ans) ? ('pass' as const) : ('fail' as const);
+          });
+        } else {
+          const numScore = typeof submission.score === 'number'
+            ? submission.score
+            : (parseFloat(String(submission.score)) || 0);
+          const passCount = Math.round((numScore / 10) * questionCount);
+          perQuestionStatus = Array.from({ length: questionCount }).map((_, qi) =>
+            qi < passCount ? ('pass' as const) : ('fail' as const)
+          );
+        }
+
+        const scoreVal = submission.score !== undefined
+          ? submission.score
+          : (perQuestionStatus.filter(r => r === 'pass').length / questionCount) * 10;
+        const numericScore = typeof scoreVal === 'number' ? Math.round(scoreVal * 10) / 10 : scoreVal;
+        const isPassed = typeof numericScore === 'number' && numericScore >= 5;
+
         return {
-          code: st.code || `st-${idx + 1}`,
-          name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-          answers,
-          totalScore: score,
+          id: st.id,
+          code: canonicalStCode,
+          name: studentDisplayName,
+          answers: perQuestionStatus,
+          rawAnswers: parsedAnswers,
+          totalScore: numericScore,
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: submission.submittedAt || new Date().toLocaleString('vi-VN'),
-          status: 'submitted' as const
+          status: 'submitted' as const,
+          feedback: submission.feedback
         };
       } else {
         return {
-          code: st.code || `st-${idx + 1}`,
-          name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+          id: st.id,
+          code: canonicalStCode,
+          name: studentDisplayName,
           answers: Array.from({ length: questionCount }).map(() => 'none' as const),
+          rawAnswers: {},
           totalScore: '-',
           aiStatus: 'none' as const,
           submittedTime: 'Chờ HS',
@@ -252,7 +390,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         };
       }
     });
-  }, [detailAssignment]);
+  }, [activeDetailAssignment, getCleanClassRoster, submissionsByHomeworkId, assignments]);
 
   const filteredTrackingStudents = useMemo(() => {
     if (trackingTab === 'needs_action') {
@@ -328,20 +466,23 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const rootId = assigningConfigAssignment.originalAssignmentId || assigningConfigAssignment.id.replace(/-class-.*$/, '');
 
     selectedAssignClasses.forEach((cls, idx) => {
-      const isFirst = idx === 0 && (!assigningConfigAssignment.targetClass || assigningConfigAssignment.targetClass === cls);
-      const assignmentId = isFirst
+      // Preserve the exact homeworkId for the primary assignment so existing links/submissions never break
+      const isPrimary = idx === 0;
+      const assignmentId = isPrimary
         ? assigningConfigAssignment.id
-        : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}-${Date.now() + idx}`;
+        : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      const clsRoster = getCleanClassRoster(cls);
 
       const classSpecificAssignment: HomeworkAssignment = {
         ...assigningConfigAssignment,
         id: assignmentId,
+        homeworkId: assignmentId,
         originalAssignmentId: rootId,
         title: assignTitle.trim() || assigningConfigAssignment.title,
         targetClass: cls, // Lưu độc lập duy nhất 1 lớp cho từng dòng
         assignedDate: new Date().toLocaleDateString('vi-VN'),
         dueDate: assignDueDate || assigningConfigAssignment.dueDate,
-        totalStudents: 35,
+        totalStudents: clsRoster.length > 0 ? clsRoster.length : (assigningConfigAssignment.totalStudents || 38),
         completedCount: assigningConfigAssignment.targetClass === cls ? (assigningConfigAssignment.completedCount || 0) : 0,
       };
 
@@ -432,9 +573,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   // Export Excel (.xlsx chuẩn)
   const handleExportExcel = () => {
-    const title = detailAssignment?.title || 'Luyện tập: bài 1: Tự nhiên và công nghệ';
-    const targetClass = detailAssignment?.targetClass || (selectedClass !== 'Tất cả các lớp' ? selectedClass : 'Lớp 3A');
-    exportAssignmentResultsExcel(title, targetClass, CLASS_3A_STUDENTS);
+    const title = activeDetailAssignment?.title || 'Bài tập rèn luyện';
+    const targetClass = activeDetailAssignment?.targetClass || (selectedClass !== 'Tất cả các lớp' ? selectedClass : 'Lớp 3C');
+    const rowsToExport = trackingStudentsList.length > 0 ? trackingStudentsList : CLASS_3A_STUDENTS;
+    exportAssignmentResultsExcel(title, targetClass, rowsToExport);
     showToast(`✅ Đã xuất danh sách kết quả ${targetClass} (.xlsx chuẩn) thành công!`);
   };
 
@@ -481,9 +623,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     }
     const classes = Array.from(new Set(rawClasses.map(c => c.trim()).filter(Boolean)));
 
-    classes.forEach((cls, idx) => {
+    classes.forEach((cls) => {
+      const canonicalId = classes.length === 1 ? rootId : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      const clsRoster = getCleanClassRoster(cls);
       const newAssignment: HomeworkAssignment = {
-        id: classes.length === 1 ? rootId : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+        id: canonicalId,
+        homeworkId: canonicalId,
+        originalAssignmentId: rootId,
         title: config.title || `Bài tập rèn luyện môn ${config.subject} (${new Date().toLocaleDateString('vi-VN')})`,
         subject: config.subject,
         grade: config.grade,
@@ -497,7 +643,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         createdBy: activeTeacherProfile.id,
         authorType: 'my',
         assignedDate: new Date().toLocaleDateString('vi-VN'),
-        totalStudents: 35,
+        totalStudents: clsRoster.length > 0 ? clsRoster.length : 38,
         completedCount: 0,
         submissions: [],
         createdAt: new Date().toISOString()
@@ -995,9 +1141,23 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 </tr>
               ) : (
                 paginatedAssignments.map((as) => {
-                  const completed = as.completedCount ?? (as.submissions ? as.submissions.length : 0);
-                  const total = as.totalStudents || 39;
-                  const percent = Math.round((completed / total) * 100);
+                  const classRoster = getCleanClassRoster(as.targetClass || 'Lớp 3C');
+                  const resolvedSubs = resolveSubmissionsForAssignment(as, submissionsByHomeworkId, assignments);
+                  const matchedStudentsCount = classRoster.length > 0
+                    ? classRoster.filter((st) =>
+                        resolvedSubs.some((sub) =>
+                          isSameStudentSubmission(sub, {
+                            id: st.id,
+                            code: st.code,
+                            username: st.username,
+                            name: st.fullName || st.name
+                          })
+                        )
+                      ).length
+                    : resolvedSubs.length;
+                  const completed = Math.max(matchedStudentsCount, resolvedSubs.length);
+                  const total = classRoster.length > 0 ? classRoster.length : (as.totalStudents || 38);
+                  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
                   const isShared = isAssignmentShared(as);
                   const subjColor = getSubjectColorStyles(as.subject);
 
@@ -1736,7 +1896,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                               : ['Nhóm 1', 'Nhóm 2'];
                             const currentItems = Array.isArray(q.classificationItems) && q.classificationItems.length > 0
                               ? q.classificationItems
-                              : [{ content: '', group: currentGroups[0] || 'Nhóm 1' }];
+                              : [{ name: '', content: '', group: currentGroups[0] || 'Nhóm 1' }];
                             return (
                               <div className="space-y-2.5 pt-1">
                                 <div className="flex items-center justify-between">
@@ -1745,7 +1905,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                                     type="button"
                                     onClick={() => {
                                       const updated = [...formQuestions];
-                                      const classificationItems = [...currentItems, { content: '', group: currentGroups[0] || 'Nhóm 1' }];
+                                      const classificationItems = [...currentItems, { name: '', content: '', group: currentGroups[0] || 'Nhóm 1' }];
                                       updated[idx] = { ...q, type: activeType, classificationGroups: currentGroups, classificationItems };
                                       setFormQuestions(updated);
                                     }}
@@ -1780,10 +1940,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                                     <div key={iIdx} className="p-2 bg-white rounded-xl border border-slate-200 flex items-center gap-2">
                                       <input
                                         type="text"
-                                        value={it.content}
+                                        value={it.name || it.content || ''}
                                         onChange={(e) => {
                                           const nextItems = [...currentItems];
-                                          nextItems[iIdx] = { ...nextItems[iIdx], content: e.target.value };
+                                          nextItems[iIdx] = { ...nextItems[iIdx], name: e.target.value, content: e.target.value };
                                           const updated = [...formQuestions];
                                           updated[idx] = { ...q, type: activeType, classificationGroups: currentGroups, classificationItems: nextItems };
                                           setFormQuestions(updated);
@@ -1931,9 +2091,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   <span>Theo dõi nộp bài rèn luyện</span>
                 </h3>
                 <p className="text-xs text-slate-600 mt-1 font-medium">
-                  Bài tập: <span className="font-extrabold text-slate-800">{detailAssignment.title || 'Bài tập: Luyện tập: bài 1: Tự nhiên và công nghệ'}</span>
+                  Bài tập: <span className="font-extrabold text-slate-800">{activeDetailAssignment?.title || detailAssignment.title || 'Bài tập tự luyện'}</span>
                   <span className="mx-2 text-slate-300">•</span>
-                  Sĩ số {detailAssignment.targetClass || 'Lớp 3A'}: <span className="font-extrabold text-indigo-900">{detailAssignment.totalStudents || 39} học sinh</span>
+                  Sĩ số {activeDetailAssignment?.targetClass || detailAssignment.targetClass || 'Lớp 3C'}: <span className="font-extrabold text-indigo-900">{trackingStudentsList.length} học sinh</span>
                 </p>
               </div>
 
@@ -1956,8 +2116,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </div>
             </div>
 
-            {/* 2. TOOLBAR & FILTER TABS */}
+              {/* 2. TOOLBAR & FILTER TABS */}
             {(() => {
+              const submittedCount = trackingStudentsList.filter(st => st.status === 'submitted').length;
+              const waitingCount = trackingStudentsList.filter(st => st.status === 'waiting').length;
               const needsActionCount = trackingStudentsList.filter(st => st.status === 'submitted' && (st.answers.includes('fail') || st.aiStatus === 'fail')).length;
               const supportCount = trackingStudentsList.filter(st => st.totalScore !== '-' && Number(st.totalScore) < 5).length;
 
@@ -1974,6 +2136,16 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                     >
                       Tất cả ({trackingStudentsList.length})
                     </button>
+
+                    <span className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Đã nộp ({submittedCount})
+                    </span>
+
+                    <span className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-slate-500" />
+                      Chưa nộp ({waitingCount})
+                    </span>
 
                     <button
                       onClick={() => setTrackingTab('needs_action')}
@@ -2015,7 +2187,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                     <th className="py-3 px-2 text-center whitespace-nowrap w-12">STT</th>
                     <th className="py-3 px-3 whitespace-nowrap w-16">MÃ HS</th>
                     <th className="py-3 px-4 whitespace-nowrap">TÊN HỌC SINH</th>
-                    {Array.from({ length: detailAssignment?.questions?.length || 5 }).map((_, qIdx) => (
+                    {Array.from({ length: Math.max(1, activeDetailAssignment?.questions?.length || detailAssignment?.questions?.length || 1) }).map((_, qIdx) => (
                       <th key={qIdx} className="py-3 px-2 text-center whitespace-nowrap font-black text-slate-700">
                         CÂU {qIdx + 1}
                       </th>
@@ -2083,7 +2255,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       </td>
 
                       {/* Cột câu hỏi động */}
-                      {Array.from({ length: detailAssignment?.questions?.length || 5 }).map((_, qIdx) => {
+                      {Array.from({ length: Math.max(1, activeDetailAssignment?.questions?.length || detailAssignment?.questions?.length || 1) }).map((_, qIdx) => {
                         const ans = st.answers[qIdx] || 'none';
                         return (
                           <td key={qIdx} className="py-3 px-2 text-center whitespace-nowrap">
@@ -2498,6 +2670,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   <button
                     onClick={() => {
+                      if (activeDetailAssignment && selectedStudentDetail) {
+                        deleteHomeworkSubmissionFromFirestore(
+                          activeDetailAssignment.id,
+                          selectedStudentDetail.code,
+                          selectedStudentDetail.name
+                        ).catch(console.error);
+                      }
                       showToast('Đã chuyển bài tập thành Chưa đạt yêu cầu (Cho học sinh làm lại)!');
                       setSelectedStudentDetail(null);
                     }}
@@ -2508,6 +2687,28 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
                   <button
                     onClick={() => {
+                      if (activeDetailAssignment && selectedStudentDetail) {
+                        const updatedScore = Math.min(10, Math.max(0, parseFloat(regradeScore) || 0));
+                        saveHomeworkSubmissionToFirestore({
+                          homeworkId: activeDetailAssignment.id,
+                          assignmentTitle: activeDetailAssignment.title,
+                          subject: activeDetailAssignment.subject,
+                          grade: activeDetailAssignment.grade,
+                          targetClass: activeDetailAssignment.targetClass,
+                          studentId: selectedStudentDetail.code,
+                          studentCode: selectedStudentDetail.code,
+                          studentRecordId: selectedStudentDetail.id || selectedStudentDetail.code,
+                          studentName: selectedStudentDetail.name,
+                          className: activeDetailAssignment.targetClass,
+                          score: updatedScore,
+                          scoreText: `${updatedScore.toFixed(1)} / 10`,
+                          answers: selectedStudentDetail.rawAnswers || {},
+                          questionResults: selectedStudentDetail.answers,
+                          submittedAt: selectedStudentDetail.submittedTime !== 'Chờ HS'
+                            ? selectedStudentDetail.submittedTime
+                            : new Date().toLocaleString('vi-VN')
+                        }).catch(console.error);
+                      }
                       showToast('Đã duyệt lại bài tập thành công!');
                       setSelectedStudentDetail(null);
                     }}

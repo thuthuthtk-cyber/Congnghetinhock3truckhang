@@ -98,53 +98,109 @@ export function sanitizeStudentForFirestore(
  */
 export function deduplicateAndNormalizeStudents(
   students: StudentRecord[],
-  className: string = 'Lớp 5B'
+  className?: string
 ): StudentRecord[] {
-  if (!Array.isArray(students)) return [];
+  if (!Array.isArray(students) || students.length === 0) return [];
 
-  const stdName = getStandardClassName(className);
+  const inferredClass = (className && className.trim() !== '')
+    ? className.trim()
+    : (students.find((s) => s && s.className && s.className.trim() !== '')?.className || 'Lớp 5B');
+  const stdName = getStandardClassName(inferredClass);
   const key = normalizeClassKey(stdName);
+  const lowerKey = key.toLowerCase();
   const seenIds = new Set<string>();
   const seenCodes = new Set<string>();
+  const seenSddcn = new Set<string>();
+  const seenNameDob = new Set<string>();
+  const seenNames = new Set<string>();
   const uniqueStudents: StudentRecord[] = [];
 
   students.forEach((st) => {
     if (!st || typeof st !== 'object') return;
-    
+
+    // 1. Strictly filter out students belonging to a different class
+    if (st.className && typeof st.className === 'string' && st.className.trim() !== '') {
+      const stClassKey = normalizeClassKey(st.className);
+      if (stClassKey && stClassKey !== key) {
+        return;
+      }
+    }
+
     const rawId = (st.id || '').trim();
     const rawCode = (st.code || st.username || '').trim().toLowerCase();
 
-    // If duplicate raw ID or code exists in the incoming array, skip duplicate row
-    if (rawId && seenIds.has(rawId)) {
+    // Check if code or id explicitly encodes a different class (e.g. "3a1" or "st-5b-2" when class is "3C")
+    const codeClassMatch = rawCode.match(/^([1-5][a-z])\d+$/i);
+    if (codeClassMatch && codeClassMatch[1].toLowerCase() !== lowerKey) {
+      return;
+    }
+    const idClassMatch = rawId.match(/^st(?:d)?-([1-5][a-z])-\d+/i);
+    if (idClassMatch && idClassMatch[1].toLowerCase() !== lowerKey) {
+      return;
+    }
+
+    const fullName = (st.fullName || st.name || '').trim().replace(/\s+/g, ' ');
+    if (!fullName) return;
+
+    const normName = fullName.toLowerCase();
+    const cleanDob = (st.dob || st.birthday || '').trim();
+    const rawSddcn = (st.sddcn || '').trim();
+    const cleanSddcn = /^\d{8,15}$/.test(rawSddcn) ? rawSddcn : '';
+    const nameDobKey = `${normName}__${cleanDob}`;
+
+    // 2. Skip duplicate ID, Code, SDDCN, or duplicate Student Name in the same class
+    if (rawId && seenIds.has(rawId.toLowerCase())) {
       return;
     }
     if (rawCode && seenCodes.has(rawCode)) {
       return;
     }
+    if (cleanSddcn && seenSddcn.has(cleanSddcn)) {
+      return;
+    }
+    if (seenNameDob.has(nameDobKey)) {
+      return;
+    }
+    // Also guard against re-indexed duplicate student records with the same full name in the same class
+    if (seenNames.has(normName) && !cleanSddcn) {
+      return;
+    }
 
-    if (rawId) seenIds.add(rawId);
+    if (rawId) seenIds.add(rawId.toLowerCase());
     if (rawCode) seenCodes.add(rawCode);
+    if (cleanSddcn) seenSddcn.add(cleanSddcn);
+    seenNameDob.add(nameDobKey);
+    seenNames.add(normName);
     uniqueStudents.push(st);
   });
 
   const finalSeenIds = new Set<string>();
+  const finalSeenCodes = new Set<string>();
   return uniqueStudents.map((st, idx) => {
     const stt = idx + 1;
-    const code = st.code || st.username || `${key.toLowerCase()}${stt}`;
-    
-    // Ensure every record has a unique ID and no collisions
-    let id = st.id && !finalSeenIds.has(st.id) ? st.id : `st-${key.toLowerCase()}-${stt}`;
+    const rawCode = (st.code || st.username || '').trim().toLowerCase();
+    let code = (rawCode && rawCode.startsWith(lowerKey) && !finalSeenCodes.has(rawCode))
+      ? rawCode
+      : `${lowerKey}${stt}`;
+    if (finalSeenCodes.has(code)) {
+      code = `${lowerKey}${stt}`;
+    }
+    finalSeenCodes.add(code);
+
+    // Ensure every record has a canonical, deterministic ID for its class position
+    let id = (st.id && !finalSeenIds.has(st.id)) ? st.id : `st-${lowerKey}-${stt}`;
     if (finalSeenIds.has(id)) {
-      id = `st-${key.toLowerCase()}-${stt}-${idx + 1}`;
+      id = `st-${lowerKey}-${stt}-${idx + 1}`;
     }
     finalSeenIds.add(id);
 
-    const fullName = (st.fullName || st.name || '').trim();
+    const fullName = (st.fullName || st.name || '').trim().replace(/\s+/g, ' ');
     const dob = (st.dob || st.birthday || '01/01/2016').trim();
     const gender: 'Nam' | 'Nữ' = st.gender === 'Nữ' ? 'Nữ' : 'Nam';
     const password = (st.password || st.pin || '123456').trim();
 
     return {
+      ...st,
       id,
       stt,
       code,
@@ -156,7 +212,7 @@ export function deduplicateAndNormalizeStudents(
       gender,
       password,
       pin: password,
-      className: st.className || stdName
+      className: stdName
     };
   });
 }
@@ -179,9 +235,9 @@ export function getVietnameseNameSortKey(fullName: string): string {
  * Sort students array in ALPHABETICAL order A-Z by Vietnamese Name
  * (Tên từ A đến Z, học sinh vần A xếp trên cùng, vần V/Z ở cuối)
  */
-export function sortStudentsByNameAZ(students: StudentRecord[]): StudentRecord[] {
+export function sortStudentsByNameAZ(students: StudentRecord[], className?: string): StudentRecord[] {
   if (!Array.isArray(students)) return [];
-  const deduped = deduplicateAndNormalizeStudents(students);
+  const deduped = deduplicateAndNormalizeStudents(students, className);
   return deduped.sort((a, b) => {
     const nameA = (a.fullName || a.name || '').trim();
     const nameB = (b.fullName || b.name || '').trim();
@@ -203,9 +259,9 @@ export function sortStudentsByNameAZ(students: StudentRecord[]): StudentRecord[]
 /**
  * Sort students array in REVERSE ALPHABETICAL order Z-A by Vietnamese Name
  */
-export function sortStudentsByNameZA(students: StudentRecord[]): StudentRecord[] {
+export function sortStudentsByNameZA(students: StudentRecord[], className?: string): StudentRecord[] {
   if (!Array.isArray(students)) return [];
-  const deduped = deduplicateAndNormalizeStudents(students);
+  const deduped = deduplicateAndNormalizeStudents(students, className);
   return deduped.sort((a, b) => {
     const nameA = (a.fullName || a.name || '').trim();
     const nameB = (b.fullName || b.name || '').trim();
@@ -225,9 +281,9 @@ export function sortStudentsByNameZA(students: StudentRecord[]): StudentRecord[]
 /**
  * Sort students array in DESCENDING order by Student ID / STT (e.g. 37, 36, ... 12, 11, ... 1)
  */
-export function sortStudentsDescending(students: StudentRecord[]): StudentRecord[] {
+export function sortStudentsDescending(students: StudentRecord[], className?: string): StudentRecord[] {
   if (!Array.isArray(students)) return [];
-  const deduped = deduplicateAndNormalizeStudents(students);
+  const deduped = deduplicateAndNormalizeStudents(students, className);
   return deduped.sort((a, b) => {
     const numA = extractStudentNumericIndex(a);
     const numB = extractStudentNumericIndex(b);
@@ -241,9 +297,9 @@ export function sortStudentsDescending(students: StudentRecord[]): StudentRecord
 /**
  * Sort students array in ASCENDING order by Student ID / STT (e.g. 1, 2, ... 37)
  */
-export function sortStudentsAscending(students: StudentRecord[]): StudentRecord[] {
+export function sortStudentsAscending(students: StudentRecord[], className?: string): StudentRecord[] {
   if (!Array.isArray(students)) return [];
-  const deduped = deduplicateAndNormalizeStudents(students);
+  const deduped = deduplicateAndNormalizeStudents(students, className);
   return deduped.sort((a, b) => {
     const numA = extractStudentNumericIndex(a);
     const numB = extractStudentNumericIndex(b);
@@ -261,7 +317,7 @@ export function getDefault5BRoster(): StudentRecord[] {
   const list5B = [
     'Hà Nhật An', 'Phạm Lê Khang An', 'Trần Gia An', 'Hoàng Thùy Anh', 'Lê Trần Huyền Anh',
     'Đồng Gia Bảo', 'Dương Thị Thùy Chi', 'Mai Thành Danh', 'Đoàn Đức Duy', 'Đồng Tiến Đạt',
-    'Đồng Tuấn Đạt', 'Trần Minh Đức', 'Trần Minh Đức', 'Bùi Gia Hân', 'Hà Minh Hân',
+    'Đồng Tuấn Đạt', 'Trần Minh Đức', 'Bùi Gia Hân', 'Hà Minh Hân',
     'Nguyễn Duy Hoan', 'Dương Đức Hùng', 'Đồng Gia Huy', 'Đặng Thanh Thanh Huyền', 'Nguyễn Thị Thu Hường',
     'Hoàng An Khang', 'Hoàng Nhật Khang', 'Phan Như Mai', 'Hà Thị Kim Ngân', 'Phạm Lê Khánh Ngân',
     'Đoàn Bảo Ngọc', 'Đồng Hải Nguyên'
@@ -917,6 +973,7 @@ export async function fetchAllStudentsFromFirestore(): Promise<Record<string, St
   try {
     // 1. Fetch all documents from 'class_rosters' collection in parallel
     const rostersSnap = await getDocs(collection(db, 'class_rosters'));
+    const rosterUpdatedAtMap: Record<string, string> = {};
     if (!rostersSnap.empty) {
       rostersSnap.forEach((docSnap) => {
         const data = docSnap.data();
@@ -929,18 +986,25 @@ export async function fetchAllStudentsFromFirestore(): Promise<Record<string, St
             : (Array.isArray(data.studentList) ? data.studentList : (Array.isArray(data.roster) ? data.roster : []));
 
           if (Array.isArray(studentList) && studentList.length > 0) {
-            const cleaned = deduplicateAndNormalizeStudents(studentList as StudentRecord[], stdName);
-            allRosters[stdName] = cleaned;
-            allRosters[upperKey] = cleaned;
-            try {
-              localStorage.setItem(`eduplay_students_${upperKey}`, JSON.stringify(cleaned));
-            } catch {}
+            const docUpdatedAt = String(data.updatedAt || '');
+            const prevUpdatedAt = rosterUpdatedAtMap[upperKey] || '';
+            const isCanonicalId = docSnap.id === upperKey;
+            // Only overwrite if this doc is newer, or if no doc was stored yet, or if this is the canonical uppercase doc and timestamps are equal
+            if (!allRosters[stdName] || (docUpdatedAt && docUpdatedAt > prevUpdatedAt) || (isCanonicalId && docUpdatedAt >= prevUpdatedAt)) {
+              const cleaned = deduplicateAndNormalizeStudents(studentList as StudentRecord[], stdName);
+              allRosters[stdName] = cleaned;
+              allRosters[upperKey] = cleaned;
+              rosterUpdatedAtMap[upperKey] = docUpdatedAt;
+              try {
+                localStorage.setItem(`eduplay_students_${upperKey}`, JSON.stringify(cleaned));
+              } catch {}
+            }
           }
         }
       });
     }
 
-    // 2. If 'students' collection exists with individual docs, fetch and merge
+    // 2. If 'students' collection exists with individual docs, ONLY use for classes that do NOT have a class_rosters entry
     try {
       const studentsSnap = await getDocs(collection(db, 'students'));
       if (!studentsSnap.empty) {
@@ -951,17 +1015,17 @@ export async function fetchAllStudentsFromFirestore(): Promise<Record<string, St
           if (cls) {
             const stdName = getStandardClassName(cls);
             if (!individualByClass[stdName]) individualByClass[stdName] = [];
-            individualByClass[stdName].push({ ...sData, id: d.id });
+            individualByClass[stdName].push({ ...sData, id: sData.id || d.id });
           }
         });
 
         Object.entries(individualByClass).forEach(([stdName, stList]) => {
           const upperKey = normalizeClassKey(stdName);
-          const existing = allRosters[stdName] || [];
-          const mergedMap = new Map<string, StudentRecord>();
-          existing.forEach((s) => mergedMap.set(s.id, s));
-          stList.forEach((s) => mergedMap.set(s.id, s));
-          const cleaned = deduplicateAndNormalizeStudents(Array.from(mergedMap.values()), stdName);
+          // Do not pollute authoritative class_rosters with stale individual student docs
+          if (allRosters[stdName] && allRosters[stdName].length > 0) {
+            return;
+          }
+          const cleaned = deduplicateAndNormalizeStudents(stList, stdName);
           allRosters[stdName] = cleaned;
           allRosters[upperKey] = cleaned;
         });

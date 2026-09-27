@@ -205,7 +205,7 @@ export const ManualQuestionBankModal: React.FC<ManualQuestionBankModalProps> = (
               : ['Nhóm 1', 'Nhóm 2'];
             baseItem.classificationItems = Array.isArray(q.classificationItems) && q.classificationItems.length > 0
               ? q.classificationItems
-              : [{ content: '', group: 'Nhóm 1' }];
+              : [{ name: '', content: '', group: 'Nhóm 1' }];
             break;
         }
 

@@ -27,6 +27,10 @@ import { matchesQuestionType, isMultipleResponse } from '../../lib/constants';
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade } from '../../services/studentSessionService';
 import {
+  saveHomeworkSubmissionToFirestore,
+  extractCanonicalStudentCode
+} from '../../services/assignmentStorageService';
+import {
   resolveCanonicalOrderingSteps,
   createShuffledOrderingSteps,
   getLocalCachedQuestions,
@@ -503,6 +507,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     onConfirm?: () => void;
   } | null>(null);
 
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
   // Real clock state
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
@@ -629,8 +635,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     // Calculate score
     const questions = exam.questions || [];
     let correct = 0;
+    const questionResults: ('pass' | 'fail' | 'none')[] = [];
     questions.forEach((q, idx) => {
       const studentChoice = answers[idx];
+      if (studentChoice === undefined || studentChoice === null || studentChoice === '') {
+        questionResults.push('none');
+        return;
+      }
       if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
         const studentStmts = studentChoice || {};
         let qCorrectCount = 0;
@@ -640,10 +651,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           }
         });
         correct += qCorrectCount / q.statements.length;
+        questionResults.push(qCorrectCount === q.statements.length ? 'pass' : 'fail');
       } else {
-        if (checkQuestionCorrectLocal(q, studentChoice)) {
+        const isOk = checkQuestionCorrectLocal(q, studentChoice);
+        if (isOk) {
           correct++;
         }
+        questionResults.push(isOk ? 'pass' : 'fail');
       }
     });
     const totalQ = questions.length || 1;
@@ -667,22 +681,36 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
     if (!isPreviewMode) {
       if (isAssignment) {
-        // Lưu riêng biệt chỉ vào kho Bài tập (assignmentHistory / eduplay_student_submissions_${currentUserId})
+        const sessionInfo = getEffectiveStudentClassAndGrade();
+        const canonicalHomeworkId = String(exam.id || '').trim();
+        const canonicalCode = extractCanonicalStudentCode(currentUserId || sessionInfo.studentId);
+        const resolvedStudentName = currentUserName || sessionInfo.studentName || 'Học sinh';
+        const resolvedClass = studentClass || sessionInfo.studentClass || (exam as any).targetClass || '';
+
         const hwSub = {
-          id: 'sub-' + Date.now(),
+          id: `sub_${canonicalHomeworkId}_${canonicalCode || currentUserId}`,
+          homeworkId: canonicalHomeworkId,
+          assignmentId: canonicalHomeworkId,
           type: 'assignment' as const,
           submissionType: 'assignment' as const,
-          studentId: currentUserId,
+          studentId: canonicalCode || currentUserId,
+          studentCode: canonicalCode || currentUserId,
+          studentRecordId: sessionInfo.studentId || currentUserId,
+          studentName: resolvedStudentName,
+          className: resolvedClass,
           title: exam.title,
           subject: exam.subject || 'Môn học',
           rank: rankTier,
           score: scoreVal,
           submittedTime: nowTimeStr,
+          questionResults,
           assignment: {
-            id: exam.id,
+            id: canonicalHomeworkId,
+            homeworkId: canonicalHomeworkId,
             title: exam.title,
             subject: exam.subject,
             grade: exam.grade,
+            targetClass: (exam as any).targetClass || resolvedClass,
             questions: exam.questions
           },
           answers
@@ -692,7 +720,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           const parsedHw = savedHw ? JSON.parse(savedHw) : [];
           const updatedHw = [
             hwSub, 
-            ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== exam.id) : [])
+            ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== canonicalHomeworkId && s.homeworkId !== canonicalHomeworkId) : [])
           ];
           localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
           window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
@@ -700,8 +728,29 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           console.error('Error saving assignment store on timeout:', err);
         }
 
+        if (canonicalHomeworkId) {
+          saveHomeworkSubmissionToFirestore({
+            homeworkId: canonicalHomeworkId,
+            assignmentTitle: exam.title,
+            subject: exam.subject,
+            grade: exam.grade,
+            targetClass: (exam as any).targetClass || resolvedClass,
+            studentId: canonicalCode || currentUserId,
+            studentCode: canonicalCode || currentUserId,
+            studentRecordId: sessionInfo.studentId || currentUserId,
+            studentName: resolvedStudentName,
+            className: resolvedClass,
+            score: scoreNumber,
+            scoreText: scoreVal,
+            answers,
+            questionResults,
+            correctCount: Math.round(correct),
+            totalQuestions: questions.length,
+            submittedAt: nowTimeStr
+          }).catch(err => console.warn('Error saving timeout homework submission to Firestore:', err));
+        }
+
         // Thưởng bài tập
-        const questions = exam.questions || [];
         let correctCount = 0;
         questions.forEach((q, idx) => {
           if (checkQuestionCorrectLocal(q, answers[idx])) correctCount++;
@@ -1083,18 +1132,24 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     });
   };
 
-  const executeSubmitExam = () => {
-    if (!activeExamSession) return;
+  const executeSubmitExam = async () => {
+    if (!activeExamSession || isSubmitting) return;
+    setIsSubmitting(true);
     try {
       const exam = activeExamSession.exam;
       const answers = { ...(activeExamSession.answers || {}) };
       
       const questions = exam.questions || [];
       let correct = 0;
+      const questionResults: ('pass' | 'fail' | 'none')[] = [];
 
       questions.forEach((q, idx) => {
         try {
           const studentChoice = answers[idx];
+          if (studentChoice === undefined || studentChoice === null || studentChoice === '') {
+            questionResults.push('none');
+            return;
+          }
           if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
             const studentStmts = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
             let qCorrectCount = 0;
@@ -1104,13 +1159,17 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               }
             });
             correct += (q.statements.length > 0 ? (qCorrectCount / q.statements.length) : 0);
+            questionResults.push(qCorrectCount === q.statements.length ? 'pass' : 'fail');
           } else {
-            if (checkQuestionCorrectLocal(q, studentChoice)) {
+            const isOk = checkQuestionCorrectLocal(q, studentChoice);
+            if (isOk) {
               correct++;
             }
+            questionResults.push(isOk ? 'pass' : 'fail');
           }
         } catch (err) {
           console.error(`Error scoring question ${idx}:`, err);
+          questionResults.push('fail');
         }
       });
       const totalQ = Math.max(1, questions.length);
@@ -1134,22 +1193,37 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
       if (!isPreviewMode) {
         if (isAssignment) {
-          // Lưu riêng biệt chỉ vào kho Bài tập (eduplay_student_submissions_${currentUserId})
+          const sessionInfo = getEffectiveStudentClassAndGrade();
+          const canonicalHomeworkId = String(exam.id || '').trim();
+          const canonicalCode = extractCanonicalStudentCode(currentUserId || sessionInfo.studentId);
+          const resolvedStudentName = currentUserName || sessionInfo.studentName || 'Học sinh';
+          const resolvedClass = studentClass || sessionInfo.studentClass || (exam as any).targetClass || '';
+          const timeSpentSec = Math.max(1, Math.round((Date.now() - (activeExamSession.startTime || Date.now())) / 1000));
+
           const hwSub = {
-            id: 'sub-' + Date.now(),
+            id: `sub_${canonicalHomeworkId}_${canonicalCode || currentUserId}`,
+            homeworkId: canonicalHomeworkId,
+            assignmentId: canonicalHomeworkId,
             type: 'assignment' as const,
             submissionType: 'assignment' as const,
-            studentId: currentUserId,
+            studentId: canonicalCode || currentUserId,
+            studentCode: canonicalCode || currentUserId,
+            studentRecordId: sessionInfo.studentId || currentUserId,
+            studentName: resolvedStudentName,
+            className: resolvedClass,
             title: exam.title,
             subject: exam.subject || 'Môn học',
             rank: rankTier,
             score: scoreVal,
             submittedTime: 'Hôm nay, ' + nowTimeStr,
+            questionResults,
             assignment: {
-              id: exam.id,
+              id: canonicalHomeworkId,
+              homeworkId: canonicalHomeworkId,
               title: exam.title,
               subject: exam.subject,
               grade: exam.grade,
+              targetClass: (exam as any).targetClass || resolvedClass,
               questions: exam.questions
             },
             answers
@@ -1159,7 +1233,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             const parsedHw = savedHw ? JSON.parse(savedHw) : [];
             const updatedHw = [
               hwSub, 
-              ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== exam.id) : [])
+              ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== canonicalHomeworkId && s.homeworkId !== canonicalHomeworkId) : [])
             ];
             localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
             window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
@@ -1167,8 +1241,34 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             console.error('Error saving assignment store:', err);
           }
 
+          if (canonicalHomeworkId) {
+            try {
+              await saveHomeworkSubmissionToFirestore({
+                homeworkId: canonicalHomeworkId,
+                assignmentTitle: exam.title,
+                subject: exam.subject,
+                grade: exam.grade,
+                targetClass: (exam as any).targetClass || resolvedClass,
+                studentId: canonicalCode || currentUserId,
+                studentCode: canonicalCode || currentUserId,
+                studentRecordId: sessionInfo.studentId || currentUserId,
+                studentName: resolvedStudentName,
+                className: resolvedClass,
+                score: scoreNumber,
+                scoreText: scoreVal,
+                answers,
+                questionResults,
+                correctCount: Math.round(correct),
+                totalQuestions: questions.length,
+                submittedAt: 'Hôm nay, ' + nowTimeStr,
+                timeSpentSeconds: timeSpentSec
+              });
+            } catch (err) {
+              console.warn('Error saving homework submission to Firestore:', err);
+            }
+          }
+
           // Thưởng bài tập
-          const questions = exam.questions || [];
           let correctCount = 0;
           questions.forEach((q, idx) => {
             if (checkQuestionCorrectLocal(q, answers[idx])) correctCount++;
@@ -1237,8 +1337,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       });
     } catch (err) {
       console.error('Fatal error during executeSubmitExam:', err);
-      setActiveExamSession(null);
-      if (onCloseExam) onCloseExam();
+      setAlertModal({
+        title: '❌ Có lỗi khi nộp bài',
+        message: 'Đã xảy ra lỗi trong quá trình nộp bài. Vui lòng thử lại.',
+        type: 'timeout'
+      });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -2163,6 +2268,17 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Submitting Loading Overlay */}
+        {isSubmitting && (
+          <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center space-y-4 shadow-2xl border border-indigo-100 animate-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto"></div>
+              <h3 className="text-lg font-black text-slate-900">Đang nộp bài và chấm điểm...</h3>
+              <p className="text-xs text-slate-600 font-medium">Hệ thống đang đồng bộ kết quả lên máy chủ và lưu lịch sử bài nộp của em. Vui lòng không đóng trình duyệt.</p>
             </div>
           </div>
         )}

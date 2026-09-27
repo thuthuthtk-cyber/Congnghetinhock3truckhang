@@ -305,15 +305,15 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
   // Derived sorted student list based on current sort direction (Alphabetical A-Z by default)
   const displayedStudents = useMemo(() => {
     if (sortDirection === 'name_asc') {
-      return sortStudentsByNameAZ(currentClassStudents);
+      return sortStudentsByNameAZ(currentClassStudents, selectedClass);
     } else if (sortDirection === 'name_desc') {
-      return sortStudentsByNameZA(currentClassStudents);
+      return sortStudentsByNameZA(currentClassStudents, selectedClass);
     } else if (sortDirection === 'desc') {
-      return sortStudentsDescending(currentClassStudents);
+      return sortStudentsDescending(currentClassStudents, selectedClass);
     } else {
-      return sortStudentsAscending(currentClassStudents);
+      return sortStudentsAscending(currentClassStudents, selectedClass);
     }
-  }, [currentClassStudents, sortDirection]);
+  }, [currentClassStudents, sortDirection, selectedClass]);
 
   // Re-fetch and sync when selectedClass changes or window update event occurs
   useEffect(() => {

@@ -555,6 +555,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
         collection(db, 'class_rosters'),
         (snapshot) => {
           const cloudRosters: Record<string, StudentRecord[]> = {};
+          const rosterUpdatedAtMap: Record<string, string> = {};
           if (!snapshot.empty) {
             snapshot.forEach((docSnap) => {
               const data = docSnap.data();
@@ -566,9 +567,15 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                   ? data.students
                   : (Array.isArray(data.studentList) ? data.studentList : (Array.isArray(data.roster) ? data.roster : []));
                 if (Array.isArray(studentList)) {
-                  const cleaned = deduplicateAndNormalizeStudents(studentList as StudentRecord[], stdName);
-                  cloudRosters[stdName] = cleaned;
-                  cloudRosters[upperKey] = cleaned;
+                  const docUpdatedAt = String(data.updatedAt || '');
+                  const prevUpdatedAt = rosterUpdatedAtMap[upperKey] || '';
+                  const isCanonicalId = docSnap.id === upperKey;
+                  if (!cloudRosters[stdName] || (docUpdatedAt && docUpdatedAt > prevUpdatedAt) || (isCanonicalId && docUpdatedAt >= prevUpdatedAt)) {
+                    const cleaned = deduplicateAndNormalizeStudents(studentList as StudentRecord[], stdName);
+                    cloudRosters[stdName] = cleaned;
+                    cloudRosters[upperKey] = cleaned;
+                    rosterUpdatedAtMap[upperKey] = docUpdatedAt;
+                  }
                 }
               }
             });
@@ -588,7 +595,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
         }
       );
 
-      // 3. Real-time listener for 'students' collection (if individual student docs exist)
+      // 3. Real-time listener for 'students' collection (only for classes without an authoritative class_rosters doc)
       unsubStudents = onSnapshot(
         collection(db, 'students'),
         (snapshot) => {
@@ -604,24 +611,28 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                 }
                 individualStudentsByClass[stdName].push({
                   ...data,
-                  id: docSnap.id
+                  id: data.id || docSnap.id
                 });
               }
             });
             if (Object.keys(individualStudentsByClass).length > 0) {
               setStudentDatabase((prev) => {
                 const updated = { ...prev };
+                let changed = false;
                 Object.entries(individualStudentsByClass).forEach(([cName, stList]) => {
                   const upperKey = normalizeClassKey(cName);
                   const existing = updated[cName] || [];
-                  const mergedMap = new Map<string, StudentRecord>();
-                  existing.forEach((s) => mergedMap.set(s.id, s));
-                  stList.forEach((s) => mergedMap.set(s.id, s));
-                  const cleaned = deduplicateAndNormalizeStudents(Array.from(mergedMap.values()), cName);
+                  if (existing.length > 0) {
+                    return;
+                  }
+                  const cleaned = deduplicateAndNormalizeStudents(stList, cName);
                   updated[cName] = cleaned;
                   updated[upperKey] = cleaned;
+                  changed = true;
                 });
-                saveAllStudentsToLocalStorage(updated);
+                if (changed) {
+                  saveAllStudentsToLocalStorage(updated);
+                }
                 return updated;
               });
             }
