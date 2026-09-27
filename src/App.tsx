@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Sidebar, resolveUserDisplayName } from './components/Sidebar';
-import { FloatingAssistant } from './components/FloatingAssistant';
-import { StudentAssistantChat } from './components/StudentAssistantChat';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PortalView } from './components/PortalView';
 
@@ -772,13 +770,6 @@ export function App() {
           </ErrorBoundary>
         </main>
       </div>
-
-      {/* Floating AI Assistant (Student vs Teacher) */}
-      {userRole === 'student' ? (
-        <StudentAssistantChat />
-      ) : (
-        <FloatingAssistant userRole={userRole} />
-      )}
 
       {/* Reward Popup Toast */}
       <RewardToastNotification />
