@@ -65,7 +65,7 @@ async function startServer() {
     const startTime = Date.now();
     try {
       const ai = await getGeminiClient(customKey);
-      const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-3.8-flash'];
       let lastError: any = null;
       for (const modelName of candidateModels) {
         try {
@@ -95,7 +95,7 @@ async function startServer() {
       res.status(500).json({
         latencyMs: durationMs,
         status: 'error',
-        modelName: 'gemini-3.8-flash',
+        modelName: 'gemini-2.5-flash',
         message: errMsg,
       });
     }
@@ -148,7 +148,7 @@ async function startServer() {
         }
       }
 
-      const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-3.8-flash'];
       let response: any = null;
       let lastError: any = null;
 

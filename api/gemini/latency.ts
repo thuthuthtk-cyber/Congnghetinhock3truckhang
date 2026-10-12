@@ -11,7 +11,7 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({
       latencyMs: 0,
       status: 'error',
-      modelName: 'gemini-3.8-flash',
+      modelName: 'gemini-2.5-flash',
       message: 'Chưa cấu hình API Key cá nhân hoặc GEMINI_API_KEY trên môi trường.',
     });
   }
@@ -26,7 +26,7 @@ export default async function handler(req: any, res: any) {
       },
     });
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-3.8-flash'];
     let lastError: any = null;
     for (const modelName of candidateModels) {
       try {
@@ -50,7 +50,7 @@ export default async function handler(req: any, res: any) {
     return res.status(500).json({
       latencyMs: Date.now() - startTime,
       status: 'error',
-      modelName: 'gemini-3.8-flash',
+      modelName: 'gemini-2.5-flash',
       message: error?.message || 'Lỗi kết nối Gemini API',
     });
   }

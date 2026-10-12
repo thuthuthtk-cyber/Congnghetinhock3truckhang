@@ -38,7 +38,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-3.8-flash'];
     let response: any = null;
     let lastError: any = null;
 

@@ -4,8 +4,8 @@ import { doc, getDoc } from 'firebase/firestore';
 
 const STORAGE_KEY = 'eduplay_gemini_api_key';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-export const CANDIDATE_GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const CANDIDATE_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-3.8-flash'];
 export const GEMINI_API_VERSION = 'v1beta';
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
