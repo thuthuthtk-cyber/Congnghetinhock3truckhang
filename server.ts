@@ -65,7 +65,7 @@ async function startServer() {
     const startTime = Date.now();
     try {
       const ai = await getGeminiClient(customKey);
-      const candidateModels = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+      const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
       let lastError: any = null;
       for (const modelName of candidateModels) {
         try {
@@ -78,7 +78,7 @@ async function startServer() {
             latencyMs: durationMs,
             status: 'online',
             modelName,
-            message: response.text ? 'Kết nối thành công!' : 'Không có phản hồi.',
+            message: response?.text ? 'Kết nối thành công!' : 'Không có phản hồi.',
           });
         } catch (err: any) {
           lastError = err;
@@ -88,14 +88,14 @@ async function startServer() {
       throw lastError || new Error('Không thể kết nối với các model Gemini.');
     } catch (error: any) {
       const durationMs = Date.now() - startTime;
-      let errMsg = error.message || 'Lỗi kết nối Gemini API';
-      if (errMsg.includes('429') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+      let errMsg = error?.message || 'Lỗi kết nối Gemini API';
+      if (errMsg?.includes?.('429') || errMsg?.includes?.('Quota') || errMsg?.includes?.('RESOURCE_EXHAUSTED')) {
         errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng nạp thêm hạn mức hoặc dùng API Key cá nhân khác.';
       }
       res.status(500).json({
         latencyMs: durationMs,
         status: 'error',
-        modelName: 'gemini-1.5-flash',
+        modelName: 'gemini-3.8-flash',
         message: errMsg,
       });
     }
@@ -148,7 +148,7 @@ async function startServer() {
         }
       }
 
-      const candidateModels = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+      const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
       let response: any = null;
       let lastError: any = null;
 

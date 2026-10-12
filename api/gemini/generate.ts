@@ -38,7 +38,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const candidateModels = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
     let response: any = null;
     let lastError: any = null;
 
@@ -49,7 +49,7 @@ export default async function handler(req: any, res: any) {
           contents,
           config,
         });
-        if (response && response.text) break;
+        if (response?.text) break;
       } catch (err: any) {
         lastError = err;
       }
@@ -59,7 +59,7 @@ export default async function handler(req: any, res: any) {
       throw lastError || new Error('Không nhận được phản hồi từ AI.');
     }
 
-    return res.status(200).json({ text: response.text });
+    return res.status(200).json({ text: response?.text || '' });
   } catch (error: any) {
     return res.status(500).json({ error: error?.message || 'Lỗi xử lý Gemini AI' });
   }
