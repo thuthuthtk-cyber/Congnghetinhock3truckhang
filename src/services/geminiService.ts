@@ -1,6 +1,12 @@
 import { LatencyTestResult, Lesson5EPlan, QuestionItem } from '../types';
+import { db } from '../firebaseConfig';
+import { doc, getDoc } from 'firebase/firestore';
 
 const STORAGE_KEY = 'eduplay_gemini_api_key';
+
+export const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash';
+export const GEMINI_API_VERSION = 'v1beta';
+export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 export function getStoredApiKey(): string {
   return localStorage.getItem(STORAGE_KEY) || '';
@@ -15,15 +21,189 @@ export function setStoredApiKey(key: string): void {
 }
 
 /**
+ * Retrieve active API key: prioritize user personal key, fallback to Firestore global key
+ */
+export async function getEffectiveApiKey(customKey?: string): Promise<string> {
+  const directKey = (customKey !== undefined ? customKey : getStoredApiKey()).trim();
+  if (directKey) return directKey;
+
+  try {
+    const configDocRef = doc(db, 'settings', 'ai_config');
+    const configSnap = await getDoc(configDocRef);
+    if (configSnap.exists()) {
+      const data = configSnap.data() as any;
+      const globalKey = (data.apiKey || data.globalApiKey || '').trim();
+      if (globalKey) return globalKey;
+    }
+  } catch (err) {
+    console.warn('Cannot fetch global API key from Firestore:', err);
+  }
+  return '';
+}
+
+/**
+ * Direct call to Google GenAI v1beta REST API
+ */
+async function callDirectGeminiV1Beta(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  systemInstruction?: string,
+  responseJson: boolean = false,
+  fileData?: {
+    base64?: string;
+    mimeType?: string;
+    name?: string;
+    text?: string;
+  }
+): Promise<string> {
+  const url = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${apiKey}`;
+
+  const parts: any[] = [];
+
+  // Multimodal file attachment
+  if (fileData && (fileData.base64 || fileData.text)) {
+    const fileName = (fileData.name || '').toLowerCase();
+    const mimeType = (fileData.mimeType || '').toLowerCase();
+    const rawBase64 = fileData.base64 ? fileData.base64.replace(/^data:[^;]+;base64,/, '') : '';
+
+    if (mimeType.includes('pdf') || fileName.endsWith('.pdf')) {
+      parts.push({
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: rawBase64,
+        },
+      });
+    } else if (fileData.text) {
+      parts.push({
+        text: `[NỘI DUNG TÀI LIỆU ĐÍNH KÈM]:\n"""\n${fileData.text}\n"""`,
+      });
+    }
+  }
+
+  parts.push({ text: prompt });
+
+  const body: any = {
+    contents: [
+      {
+        parts,
+      },
+    ],
+  };
+
+  if (systemInstruction) {
+    body.systemInstruction = {
+      parts: [{ text: systemInstruction }],
+    };
+  }
+
+  if (responseJson) {
+    body.generationConfig = {
+      responseMimeType: 'application/json',
+    };
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errorJson = await res.json().catch(() => null);
+    let errorMsg = errorJson?.error?.message || `Lỗi Gemini API v1beta (${res.status})`;
+    if (errorMsg.includes('API_KEY_INVALID') || errorMsg.includes('API key not valid')) {
+      errorMsg = 'API Key không hợp lệ. Vui lòng kiểm tra lại Google Gemini API Key.';
+    } else if (errorMsg.includes('RESOURCE_EXHAUSTED') || errorMsg.includes('Quota')) {
+      errorMsg = 'Hạn mức API Key đã hết (Quota Exceeded). Thầy/Cô vui lòng đổi API Key khác hoặc nạp thêm hạn mức.';
+    }
+    throw new Error(errorMsg);
+  }
+
+  const data = await res.json();
+  const candidate = data.candidates?.[0];
+  const text = candidate?.content?.parts?.map((p: any) => p.text).join('') || '';
+  return text;
+}
+
+/**
+ * Direct latency test against Google Gen AI v1beta REST API
+ */
+async function testDirectLatencyV1Beta(apiKey: string, model: string = DEFAULT_GEMINI_MODEL): Promise<LatencyTestResult> {
+  const startTime = Date.now();
+  const url = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${apiKey}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: 'Xin chào, trả lời "OK" để kiểm tra kết nối.' }],
+          },
+        ],
+      }),
+    });
+
+    const durationMs = Date.now() - startTime;
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      let errMsg = errJson?.error?.message || `Lỗi phản hồi HTTP ${res.status}`;
+      if (errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid')) {
+        errMsg = 'API Key không hợp lệ. Vui lòng kiểm tra lại Google Gemini API Key.';
+      } else if (errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota')) {
+        errMsg = 'Hạn mức API Key đã hết (Quota Exceeded). Vui lòng thử lại sau hoặc đổi Key khác.';
+      }
+      return {
+        latencyMs: durationMs,
+        status: 'error',
+        modelName: model,
+        message: errMsg,
+      };
+    }
+
+    const data = await res.json();
+    const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return {
+      latencyMs: durationMs,
+      status: 'online',
+      modelName: model,
+      message: candidateText ? 'Kết nối thành công!' : 'Đã kết nối API v1beta.',
+    };
+  } catch (err: any) {
+    return {
+      latencyMs: Date.now() - startTime,
+      status: 'error',
+      modelName: model,
+      message: err?.message || 'Không thể gửi yêu cầu tới Google Gen AI v1beta.',
+    };
+  }
+}
+
+/**
  * Test live latency against Gemini API
  */
 export async function testGeminiLatency(customKey?: string): Promise<LatencyTestResult> {
-  const apiKey = customKey !== undefined ? customKey : getStoredApiKey();
+  // 1. If key is provided or stored, test directly against Google GenAI v1beta
+  const directKey = (customKey !== undefined ? customKey : getStoredApiKey()).trim();
+  if (directKey) {
+    return await testDirectLatencyV1Beta(directKey, DEFAULT_GEMINI_MODEL);
+  }
+
+  // 2. If no direct key, check Firestore global API key
+  const effectiveKey = await getEffectiveApiKey();
+  if (effectiveKey) {
+    return await testDirectLatencyV1Beta(effectiveKey, DEFAULT_GEMINI_MODEL);
+  }
+
+  // 3. Fallback to server endpoint if running on dev / full-stack server
   try {
     const res = await fetch('/api/gemini/latency', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ customKey: apiKey }),
+      body: JSON.stringify({ customKey: '' }),
     });
 
     const contentType = res.headers.get('content-type') || '';
@@ -32,12 +212,13 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
       data = await res.json();
     } else {
       const textResponse = await res.text();
-      if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE')) {
+      // On Vercel without serverless route or when 404 HTML is returned
+      if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE') || textResponse.includes('NOT_FOUND')) {
         return {
           latencyMs: 0,
           status: 'error',
-          modelName: 'gemini-3.7-flash',
-          message: 'Máy chủ đang khởi động hoặc phản hồi trang HTML (404/502). Vui lòng thử lại sau.',
+          modelName: DEFAULT_GEMINI_MODEL,
+          message: 'Chưa cấu hình API Key. Thầy/Cô vui lòng nhập Personal API Key hoặc lưu Global API Key chung cho trường.',
         };
       }
       try {
@@ -46,7 +227,7 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
         return {
           latencyMs: 0,
           status: 'error',
-          modelName: 'gemini-3.7-flash',
+          modelName: DEFAULT_GEMINI_MODEL,
           message: textResponse || 'Lỗi phản hồi từ máy chủ.',
         };
       }
@@ -56,28 +237,28 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
       return {
         latencyMs: data.latencyMs || 0,
         status: 'error',
-        modelName: data.modelName || 'gemini-3.7-flash',
+        modelName: data.modelName || DEFAULT_GEMINI_MODEL,
         message: data.message || 'Lỗi kiểm tra kết nối API Key.',
       };
     }
     return {
       latencyMs: data.latencyMs,
       status: 'online',
-      modelName: data.modelName || 'gemini-3.7-flash',
+      modelName: data.modelName || DEFAULT_GEMINI_MODEL,
       message: data.message || 'Kết nối thành công!',
     };
-  } catch (err: any) {
+  } catch {
     return {
       latencyMs: 0,
       status: 'error',
-      modelName: 'gemini-3.7-flash',
-      message: 'Không thể kết nối tới máy chủ backend.',
+      modelName: DEFAULT_GEMINI_MODEL,
+      message: 'Chưa cấu hình API Key. Thầy/Cô vui lòng nhập Personal API Key hoặc lưu Global API Key chung cho trường.',
     };
   }
 }
 
 /**
- * Core AI generation call via server API proxy
+ * Core AI generation call via direct Google GenAI v1beta or server API proxy
  */
 async function callGeminiApi(
   prompt: string,
@@ -91,8 +272,36 @@ async function callGeminiApi(
     text?: string;
   }
 ): Promise<string> {
-  const customKey = getStoredApiKey();
+  const activeKey = await getEffectiveApiKey();
 
+  // If client has an API key (Personal or Global from Firestore), call Google GenAI v1beta directly
+  if (activeKey) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const text = await callDirectGeminiV1Beta(
+          activeKey,
+          DEFAULT_GEMINI_MODEL,
+          prompt,
+          systemInstruction,
+          responseJson,
+          fileData
+        );
+        return text;
+      } catch (err: any) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        let errText = err?.message || 'Không thể kết nối tới Google Gemini API.';
+        if (errText.includes('503') || errText.includes('UNAVAILABLE') || errText.includes('high demand')) {
+          errText = 'Hệ thống AI đang quá tải tạm thời. Thầy/Cô vui lòng bấm "Thử lại ngay" hoặc thử lại sau ít phút nhé!';
+        }
+        throw new Error(errText);
+      }
+    }
+  }
+
+  // Fallback to server endpoint (e.g. backend with server-side environment GEMINI_API_KEY)
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch('/api/gemini/generate', {
@@ -101,7 +310,7 @@ async function callGeminiApi(
         body: JSON.stringify({
           prompt,
           systemInstruction,
-          customKey,
+          customKey: '',
           responseJson,
           fileData,
         }),
@@ -113,8 +322,8 @@ async function callGeminiApi(
         data = await res.json();
       } else {
         const textResponse = await res.text();
-        if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE')) {
-          throw new Error('Máy chủ đang khởi động hoặc phản hồi trang HTML (404/502). Vui lòng thử lại sau giây lát.');
+        if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE') || textResponse.includes('NOT_FOUND')) {
+          throw new Error('Chưa cấu hình API Key. Thầy/Cô vui lòng nhập Personal API Key hoặc lưu Global API Key trong mục Cấu hình API Key trên thanh menu.');
         }
         try {
           data = JSON.parse(textResponse);
