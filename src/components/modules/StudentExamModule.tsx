@@ -30,6 +30,7 @@ import {
   saveHomeworkSubmissionToFirestore,
   extractCanonicalStudentCode
 } from '../../services/assignmentStorageService';
+import { saveExamSubmissionToFirestore } from '../../services/examStorageService';
 import {
   resolveCanonicalOrderingSteps,
   createShuffledOrderingSteps,
@@ -1283,6 +1284,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             }
           }
         } else {
+          const sessionInfo = getEffectiveStudentClassAndGrade();
+          const canonicalStudentId = currentUserId || sessionInfo.studentId;
+          const canonicalCode = extractCanonicalStudentCode(canonicalStudentId);
+          const resolvedStudentName = currentUserName || sessionInfo.studentName || 'Học sinh';
+          const resolvedClass = studentClass || sessionInfo.studentClass || (exam as any).targetClass || '';
+
           // Lưu riêng biệt chỉ vào kho Đề kiểm tra (eduplay_student_exam_subs_${currentUserId})
           const examSub: ExamSubmissionItem = {
             id: 'sub-' + Date.now(),
@@ -1303,8 +1310,35 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           try {
             localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
             window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+            window.dispatchEvent(new Event('eduplay_exam_submitted'));
           } catch (err) {
             console.error('Error saving exam submission:', err);
+          }
+
+          // Ghi nhận đầy đủ bài nộp lên Firestore ('submissions' collection & cập nhật 'exams/{examId}')
+          try {
+            await saveExamSubmissionToFirestore({
+              examId: exam.id || 'ex-manual',
+              originalExamId: (exam as any).originalExamId || exam.id,
+              studentId: currentUserId,
+              studentCode: canonicalCode || currentUserId,
+              studentRecordId: sessionInfo.studentId || currentUserId,
+              studentName: resolvedStudentName,
+              classId: resolvedClass,
+              className: resolvedClass,
+              score: scoreNumber,
+              scoreText: scoreVal,
+              correctCount: Math.round(correct),
+              totalQuestions: questions.length,
+              answers,
+              questionResults,
+              title: exam.title,
+              subject: exam.subject || 'Môn học',
+              submittedAt: new Date().toISOString(),
+              submittedTime: 'Hôm nay, ' + nowTimeStr,
+            });
+          } catch (err) {
+            console.warn('Error saving exam submission to Firestore:', err);
           }
 
           // Thưởng đề kiểm tra

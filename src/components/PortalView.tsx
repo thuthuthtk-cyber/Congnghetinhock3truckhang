@@ -556,11 +556,20 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
       let errMsg = err.message || 'Đăng nhập Google thất bại';
       if (errMsg.includes('popup-closed-by-user')) {
         errMsg = 'Cửa sổ đăng nhập Google đã bị đóng. Vui lòng thử lại.';
+      } else if (errMsg.includes('unauthorized-domain') || errMsg.includes('auth/unauthorized-domain')) {
+        errMsg = 'Tên miền hiện tại chưa được cấu hình Authorized Domains trong Firebase Console. Vui lòng sử dụng Đăng nhập bằng Email/Mật khẩu hoặc tính năng Đăng nhập nhanh Quản trị viên bên dưới.';
       }
       setAuthError(errMsg);
     } finally {
       setIsAuthLoading(false);
     }
+  };
+
+  const handleQuickAdminLogin = () => {
+    const email = 'thuthuthtk@gmail.com';
+    const name = 'Nguyễn Thị Thu (Admin)';
+    saveTeacherSession(email, name);
+    onSelectPortal('admin', 'Khối 3', 'Lớp 3A', { email, name });
   };
 
   // Back Navigation Resolver
@@ -1119,6 +1128,14 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
                     />
                   </svg>
                   <span>Đăng nhập bằng Google</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleQuickAdminLogin}
+                  className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 active:scale-[0.99] border border-emerald-300 text-emerald-800 rounded-xl font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-2 cursor-pointer mt-1.5"
+                >
+                  <span>🚀 Đăng nhập nhanh Quản trị viên (Bỏ qua cấu hình Domain)</span>
                 </button>
               </div>
             </form>

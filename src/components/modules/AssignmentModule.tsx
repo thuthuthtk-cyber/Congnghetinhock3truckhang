@@ -1143,20 +1143,35 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 paginatedAssignments.map((as) => {
                   const classRoster = getCleanClassRoster(as.targetClass || 'Lớp 3C');
                   const resolvedSubs = resolveSubmissionsForAssignment(as, submissionsByHomeworkId, assignments);
-                  const matchedStudentsCount = classRoster.length > 0
-                    ? classRoster.filter((st) =>
-                        resolvedSubs.some((sub) =>
-                          isSameStudentSubmission(sub, {
-                            id: st.id,
-                            code: st.code,
-                            username: st.username,
-                            name: st.fullName || st.name
-                          })
-                        )
-                      ).length
-                    : resolvedSubs.length;
-                  const completed = Math.max(matchedStudentsCount, resolvedSubs.length);
+
+                  const uniqueStudentIds = new Set<string>();
+                  resolvedSubs.forEach((sub) => {
+                    const canon = extractCanonicalStudentCode(sub.studentCode || sub.studentId);
+                    const rawId = String(sub.studentRecordId || sub.studentId || '').trim().toLowerCase();
+                    const name = String(sub.studentName || '').trim().toLowerCase();
+                    if (canon) uniqueStudentIds.add(canon);
+                    else if (rawId) uniqueStudentIds.add(rawId);
+                    else if (name && name !== 'học sinh') uniqueStudentIds.add(name);
+                  });
+
+                  let matchedStudentsCount = 0;
+                  if (classRoster.length > 0) {
+                    matchedStudentsCount = classRoster.filter((st) =>
+                      resolvedSubs.some((sub) =>
+                        isSameStudentSubmission(sub, {
+                          id: st.id,
+                          code: st.code,
+                          username: st.username,
+                          name: st.fullName || st.name
+                        })
+                      )
+                    ).length;
+                  } else {
+                    matchedStudentsCount = uniqueStudentIds.size;
+                  }
+
                   const total = classRoster.length > 0 ? classRoster.length : (as.totalStudents || 38);
+                  const completed = Math.min(total, matchedStudentsCount);
                   const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
                   const isShared = isAssignmentShared(as);
                   const subjColor = getSubjectColorStyles(as.subject);

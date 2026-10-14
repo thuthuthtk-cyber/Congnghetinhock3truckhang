@@ -502,6 +502,8 @@ export async function saveHomeworkSubmissionToFirestore(params: {
           studentName: submissionRecord.studentName || params.studentName,
           homeworkId,
           assignmentId: homeworkId,
+          testId: homeworkId,
+          examId: homeworkId,
           classId: params.targetClass || params.className || '',
           className: params.className || params.targetClass || '',
           assignmentTitle: params.assignmentTitle || '',
